@@ -1,0 +1,32 @@
+# Web Search Configuration
+# Ensure to replace the placeholders with your actual API
+TAVILY_API_KEY="...."
+
+# Vector Database Configuration
+# Ensure to replace the placeholders with your actual Qdrant credentials
+QDRANT_URL="...."
+QDRANT_API_KEY="...."
+
+# R2 Storage Configuration
+CLOUDFLARE_ACCOUNT_ID="...."
+CLOUDFLARE_ACCESS_KEY_ID="...."
+CLOUDFLARE_SECRET_ACCESS_KEY="...."
+CLOUDFLARE_BUCKET_NAME="...."
+
+# LLM Configuration
+# Ensure to replace the placeholders with your actual API keys
+ANTHROPIC_API_KEY="...."
+GOOGLE_API_KEY="...."
+OPENAI_API_KEY="...."
+GROQ_API_KEY="...."
+OPENROUTER_API_KEY="...."
+
+# LangSmith Configuration
+# Ensure to replace the placeholders with your actual LangSmith credentials
+LANGSMITH_TRACING=true
+LANGSMITH_ENDPOINT="https://api.smith.langchain.com"
+LANGSMITH_API_KEY="...."
+LANGSMITH_PROJECT="Your_Project_Name"
+# Environment Configuration
+ENVIRONMENT_TYPE=development  # or production
+PORT=8000
