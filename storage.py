@@ -2,9 +2,7 @@ import boto3
 import requests
 import os
 from typing import List, Optional, Tuple, Union
-# --- START: MODIFIED IMPORT ---
 from botocore.exceptions import ClientError, EndpointConnectionError
-# --- END: MODIFIED IMPORT ---
 import hashlib
 from urllib.parse import urlparse
 import shutil
@@ -16,9 +14,7 @@ import logging
 # Load environment variables at the top of the file
 load_dotenv()
 
-# --- START: Enhanced Logging ---
 logger = logging.getLogger(__name__)
-# --- END: Enhanced Logging ---
 
 class CloudflareR2Storage:
     def __init__(self):
@@ -150,7 +146,7 @@ class CloudflareR2Storage:
                 
                 logger.info(f"✅ File '{filename}' uploaded successfully to R2: {file_url}")
                 return True, file_url
-            # --- START: MODIFIED EXCEPTION HANDLING ---
+
             except EndpointConnectionError as e:
                 error_msg = (
                     f"CRITICAL: Could not connect to the R2 endpoint. "
@@ -160,7 +156,7 @@ class CloudflareR2Storage:
                 if not is_user_doc:
                     return self._upload_local_kb(file_data, filename)
                 return False, error_msg
-            # --- END: MODIFIED EXCEPTION HANDLING ---
+
             except Exception as e:
                 logger.error(f"CRITICAL: R2 upload failed for '{filename}': {e}. Attempting fallback for KB doc.")
                 if not is_user_doc:
@@ -216,7 +212,7 @@ class CloudflareR2Storage:
             logger.error(f"General error getting content for '{key}': {e}")
             return None
 
-    # --- START: REWRITTEN WORKFLOW ---
+
     def _download_content_from_url(self, url: str) -> Tuple[bool, Union[bytes, str], Optional[str]]:
         """
         Downloads content from a URL.
@@ -274,7 +270,7 @@ class CloudflareR2Storage:
             filename=final_filename, 
             is_user_doc=is_user_doc
         )
-    # --- END: REWRITTEN WORKFLOW ---
+
             
     def download_file(self, key: str, local_download_path: str) -> bool:
         """Download a file to a local path, with fallback logic."""

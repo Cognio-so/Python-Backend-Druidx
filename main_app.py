@@ -187,7 +187,7 @@ class BaseAgentRequest(BaseModel):
 class ChatPayload(BaseModel):
     message: str
     history: Optional[List[Dict[str, str]]] = []
-    # --- FIX: This is now deprecated but kept for frontend compatibility. The logic will ignore it. ---
+    # This is now deprecated but kept for frontend compatibility. The logic will ignore it. ---
     user_document_keys: Optional[List[str]] = Field([], alias="user_documents")
     use_hybrid_search: Optional[bool] = False
     model: Optional[str] = None
@@ -229,7 +229,7 @@ class GptOpenedRequest(BaseModel):
     api_keys: Optional[Dict[str, str]] = Field(default_factory=dict)
 
 
-# --- Helper Functions (Merged and Refactored) ---
+# Helper Functions (Merged and Refactored) ---
 
 def get_session_id(user_id: str, gpt_id: str) -> str:
     """Generate session ID from user id and GPT ID (robust version)."""
@@ -299,7 +299,7 @@ async def get_or_create_agent(
         if not config.openai_api_key:
             raise ValueError("OpenAI API key is required but was not provided.")
 
-        # --- START: Pass global clients to the agent constructor ---
+        # Pass global clients to the agent constructor ---
         agent = ChatbotAgent(
             config=config,
             storage_client=r2_storage,
@@ -347,7 +347,7 @@ async def process_uploaded_file_to_r2(file: UploadFile, is_user_doc: bool) -> Fi
         logger.error(f"❌ Exception processing file '{file.filename}': {e}", exc_info=True)
         return FileUploadInfoResponse(filename=file.filename, stored_url_or_key="", status="failure", error_message=str(e))
 
-# --- API Endpoints (Merged and Harmonized) ---
+# API Endpoints (Merged and Harmonized) ---
 
 @app.get("/", include_in_schema=False)
 async def root_redirect():
@@ -416,7 +416,7 @@ async def upload_documents_endpoint(
 
     agent = await get_or_create_agent(user_id=user_id, gpt_id=gpt_id)
     
-    # --- START FIX: Index documents statefully on the backend ---
+    # Index documents statefully on the backend 
     async def _index_documents_task(agent_instance: ChatbotAgent, urls: List[str], is_user_specific: bool, session_id: str):
         if is_user_specific:
             logger.info(f"👤 BG Task: Indexing {len(urls)} user documents for session {session_id}...")
@@ -433,7 +433,6 @@ async def upload_documents_endpoint(
     message = f"{len(successful_uploads)} {doc_type} files accepted and are being indexed in the background."
     if is_user_doc_bool:
         message += " They will be automatically available for your chat session."
-    # --- END FIX ---
 
     return JSONResponse(status_code=202, content={
         "message": message,
@@ -447,11 +446,11 @@ async def chat_stream(request: ChatStreamRequest):
         session_id = get_session_id(request.user_id, request.gpt_id)
         logger.info(f"💬 Chat stream request from {request.user_id} for GPT {request.gpt_id}")
         
-        # --- START FIX: Log based on stateful logic ---
+        # Log based on stateful logic 
         logger.info("📄 Agent will automatically use any indexed user-specific documents for this session.")
         if request.user_document_keys:
              logger.warning("⚠️ 'user_documents' field is deprecated. Documents should be uploaded via /upload-documents to be indexed for the session.")
-        # --- END FIX ---
+
 
         agent = await get_or_create_agent(
             user_id=request.user_id,
@@ -463,7 +462,7 @@ async def chat_stream(request: ChatStreamRequest):
         
         async def generate():
             try:
-                # --- START FIX: Remove user_documents from the call ---
+                # Remove user_documents from the call ---
                 # The agent now retrieves them automatically from the indexed session collection.
                 async for chunk in agent.query_stream(
                     session_id=session_id,
@@ -475,7 +474,7 @@ async def chat_stream(request: ChatStreamRequest):
                     mcp_schema=request.mcp_schema,
                     api_keys=request.api_keys
                 ):
-                # --- END FIX ---
+
                     yield f"data: {json.dumps(chunk)}\n\n"
             except Exception as e:
                 logger.error(f"❌ Error during stream generation for session {session_id}: {e}", exc_info=True)
@@ -505,7 +504,7 @@ async def chat_endpoint(request: ChatRequest):
             force_recreate=bool(request.api_keys)
         )
         
-        # --- START FIX: Remove user_documents from the call ---
+        # Remove user_documents from the call ---
         response = await agent.query(
             session_id=session_id,
             query=request.message,
@@ -516,7 +515,6 @@ async def chat_endpoint(request: ChatRequest):
             mcp_schema=request.mcp_schema,
             api_keys=request.api_keys
         )
-        # --- END FIX ---
         return JSONResponse(content=response)
         
     except Exception as e:
@@ -592,7 +590,7 @@ async def upload_chat_files_endpoint(
             "processing_results": [r.model_dump() for r in results]
         })
 
-    # --- START FIX: Index user documents statefully ---
+    # Index user documents statefully ---
     agent = await get_or_create_agent(user_id=user_id, gpt_id=gpt_id)
     session_id = get_session_id(user_id, gpt_id)
 
@@ -602,7 +600,6 @@ async def upload_chat_files_endpoint(
         logger.info(f"✅ BG Task: Indexing complete for user chat files.")
     
     background_tasks.add_task(_index_user_docs_task, agent, session_id, successful_urls)
-    # --- END FIX ---
 
     return JSONResponse(status_code=202, content={
         "success": True,

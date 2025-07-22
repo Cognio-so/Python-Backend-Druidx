@@ -311,10 +311,9 @@ class ChatbotAgent:
         self.sessions: Dict[str, ChatMessageHistory] = {}
         self.session_contexts: Dict[str, Dict[str, Any]] = {}
         
-        # --- START: Store pre-initialized clients ---
         self.llm_manager = llm_manager
         self.qdrant_client = qdrant_client
-        # --- END: Store pre-initialized clients ---
+
 
         # Initialize storage system FIRST (CRITICAL)
         self.storage_client = storage_client
@@ -323,19 +322,18 @@ class ChatbotAgent:
         # Initialize all modules with storage integration
         self._initialize_modules()
         
-        # --- START: ADD VISION CAPABILITY CHECK ---
         self.has_vision_capability = self.config.default_model.lower() in [
             "gpt-4o", "gpt-4o-mini", "gpt-4-vision", "gpt-4-turbo",
-            "gemini-1.5-pro", "gemini-1.5-flash", "gemini-1.5-pro-latest", "gemini-1.5-flash-latest",
+            "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite-preview-06-17", "gemini-2.0-flash",
             "claude-3-opus-20240229", "claude-3-sonnet-20240229", "claude-3-haiku-20240307", "claude-3.5-sonnet-20240620",
-            "llava-v1.5-7b"
+            "meta-llama/llama-4-scout-17b-16e-instruct"
         ] or "vision" in self.config.default_model.lower()
 
         if self.has_vision_capability:
             logger.info(f"✅ Agent configured with a vision-capable model: {self.config.default_model}")
         else:
             logger.warning(f"⚠️ Agent's model may not support vision: {self.config.default_model}. Image processing will be handled by RAG pipeline if possible.")
-        # --- END: ADD VISION CAPABILITY CHECK ---
+
         
         # Setup LangSmith if available
         if LANGSMITH_AVAILABLE and self.config.langsmith_api_key:
@@ -377,7 +375,6 @@ class ChatbotAgent:
     def _initialize_modules(self):
         """Initialize all integrated modules with proper error handling and storage integration"""
         try:
-            # --- START: Use the provided LLM Manager ---
             if not self.llm_manager:
                 logger.warning("No global LLM Manager provided, creating a local instance.")
                 if LLM_MODEL_AVAILABLE:
@@ -391,7 +388,7 @@ class ChatbotAgent:
             
             # Initialize RAG Pipeline with storage integration (CRITICAL)
             if RAG_CODE_AVAILABLE:
-                # FIX: Create the RAG configuration object from the main ChatbotConfig
+                # Create the RAG configuration object from the main ChatbotConfig
                 rag_config = self.config.to_rag_config(self.storage_client)
 
                 self.rag_pipeline = RAGPipeline(
@@ -1062,18 +1059,27 @@ Use appropriate emojis sparingly and end with an open question or invitation to 
                         
                         # Convert messages to Claude format
                         claude_messages = []
-                        system_content = greeting_system_prompt
+                        system_content = self.config.default_system_prompt
                         
-                        for msg in messages[1:]:  # Skip system message
-                            if msg["role"] != "system":
+                        for msg in messages:
+                            if msg["role"] == "system":
+                                system_content = msg["content"]
+                            elif msg["role"] != "system":
                                 claude_messages.append(msg)
+
+                        # Use the provider's mapping function to get the correct model ID
+                        claude_provider = self.llm_manager.providers.get("claude")
+                        if not claude_provider:
+                             raise ValueError("Claude provider not found in LLM Manager")
                         
+                        correct_model_id = claude_provider._map_model_name(current_model)
+
                         response_stream = await anthropic_client.messages.create(
-                            model="claude-3.5-haiku-20240307",
+                            model=correct_model_id, #<-- FIXED: Use the dynamically determined model
                             system=system_content,
                             messages=claude_messages,
-                            max_tokens=150,
-                            temperature=0.7,
+                            max_tokens=self.config.max_tokens,
+                            temperature=self.config.temperature,
                             stream=True
                         )
                         
@@ -1082,7 +1088,7 @@ Use appropriate emojis sparingly and end with an open question or invitation to 
                                 yield chunk.delta.text
                         return
                 except Exception as e:
-                    logger.error(f"Claude greeting streaming error: {e}")
+                    logger.error(f"Claude streaming error: {e}")
             
             # Fallback: Use LLM manager's generate_response method (non-streaming)
             if self.llm_manager:
@@ -1188,9 +1194,16 @@ Use appropriate emojis sparingly and end with an open question or invitation to 
                                 system_content = msg["content"]
                             elif msg["role"] != "system":
                                 claude_messages.append(msg)
+
+                        # Use the provider's mapping function to get the correct model ID
+                        claude_provider = self.llm_manager.providers.get("claude")
+                        if not claude_provider:
+                             raise ValueError("Claude provider not found in LLM Manager")
                         
+                        correct_model_id = claude_provider._map_model_name(current_model)
+
                         response_stream = await anthropic_client.messages.create(
-                            model="claude-3.5-haiku-20240307",
+                            model=correct_model_id, #<-- FIXED: Use the dynamically determined model
                             system=system_content,
                             messages=claude_messages,
                             max_tokens=self.config.max_tokens,
@@ -1622,7 +1635,7 @@ Use appropriate emojis sparingly and end with an open question or invitation to 
         # The storage layer will correctly label them as `is_user_doc=True` if needed,
         # but for now, they share the same ingestion logic.
         return await self.add_documents_to_knowledge_base(urls)
-    # --- END: REWRITTEN METHOD TO USE NEW WORKFLOW ---
+
 
     
     async def add_documents_from_urls(self, urls: List[str]) -> Dict[str, Any]:

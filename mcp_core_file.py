@@ -85,7 +85,7 @@ class MCPConfiguration:
         r'@\{([^}]+)\}',                    # Catches @{servername}
     ])
     
-    # --- START: MODIFIED URL DETECTION PATTERNS ---
+    # MODIFIED URL DETECTION PATTERNS ---
     # URL detection patterns for identifying URLs in queries
     url_patterns: List[str] = field(default_factory=lambda: [
         r'https?://[^\s/$.?#].[^\s]*',  # Full URLs
@@ -93,7 +93,7 @@ class MCPConfiguration:
         # Added a new, more robust pattern for standalone domains like 'google.com'
         r'\b[a-zA-Z0-9.-]+\.(?:com|org|net|edu|gov|io|co|ai|dev|us|uk|ca|info|biz)\b(?:/[^\s]*)?'
     ])
-    # --- END: MODIFIED URL DETECTION PATTERNS ---
+    # MODIFIED URL DETECTION PATTERNS ---
     
     # Settings for keeping navigation tools (like browsers) alive between queries
     keep_navigation_tool_open: bool = True
@@ -399,7 +399,7 @@ class MCPCore:
             )
             self.active_mcp_processes[session_id] = process
 
-            # --- Start JSON-RPC Communication ---
+            # Start JSON-RPC Communication ---
             
             # 1. Send `initialize` request
             init_request = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
@@ -407,7 +407,7 @@ class MCPCore:
             await process.stdin.drain()
             init_response = await self._read_json_response(process.stdout, self.config.json_read_timeout)
             
-            # --- START: MODIFIED TIMEOUT HANDLING ---
+            #  MODIFIED TIMEOUT HANDLING ---
             if not init_response:
                 # Attempt to read from stderr to provide more context for the failure
                 try:
@@ -420,7 +420,7 @@ class MCPCore:
                 yield f"❌ MCP Initialization Failed: The server took too long to respond. {error_detail}\n\nPlease check the server's configuration or try a different query."
                 # The `finally` block will now handle process termination.
                 return 
-            # --- END: MODIFIED TIMEOUT HANDLING ---
+            # MODIFIED TIMEOUT HANDLING ---
 
             logger.info(f"✅ MCP Server Initialized. Info: {init_response.get('result', {}).get('serverInfo', {})}")
 
@@ -505,7 +505,7 @@ class MCPCore:
 
                 # Otherwise, it might be a notification we don't handle, so we just loop.
             
-            # --- End JSON-RPC Communication ---
+            # JSON-RPC Communication ---
             
             is_nav_tool = self._is_navigation_tool(tool_name)
             is_url_query = bool(self._extract_urls_from_query(query))
@@ -541,7 +541,7 @@ class MCPCore:
         if not tool_name: return False
         return any(indicator in tool_name.lower() for indicator in self.config.navigation_tool_names)
 
-    # --- START: REPLACED METHOD WITH MORE ROBUST LOGIC ---
+    # REPLACED METHOD WITH MORE ROBUST LOGIC ---
     async def _construct_tool_arguments(self, tool_to_use: Dict[str, Any], query: str, messages: List[Dict[str, str]], model_override: Optional[str] = None) -> Dict[str, Any]:
         """
         Intelligently constructs the arguments dictionary for a given tool call with robust URL handling.
@@ -613,7 +613,7 @@ class MCPCore:
                 tool_args[first_param] = query
 
         return tool_args
-    # --- END: REPLACED METHOD ---
+
         
     def _select_best_tool_for_query(self, query: str, available_tools: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Selects the most appropriate tool from a list based on the query content."""

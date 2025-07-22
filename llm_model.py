@@ -170,21 +170,20 @@ class LLMConfig:
         
         # Claude models
         "claude-3-5-sonnet-20240620": "claude",
-        "claude-3.5-sonnet": "claude",
         "claude-3-opus-20240229": "claude",
-        "claude-3-opus": "claude",
-        "claude-3-haiku-20240307": "claude",
-        "claude-3-haiku": "claude",
+        "claude-3-sonnet-20240229": "claude",
+        "claude-3-5-haiku-20241022": "claude",
+
 
         # Gemini models
-        "gemini-1.5-pro": "gemini",
-        "gemini-1.5-flash": "gemini",
-        "gemini-1.5-pro-latest": "gemini",
-        "gemini-1.5-flash-latest": "gemini",
+        "gemini-2.5-pro": "gemini",
+        "gemini-2.5-flash": "gemini",
+        "gemini-2.0-flash-lite": "gemini",
+        "gemini-2.5-flash-lite-preview-06-1": "gemini",
         
         # Groq/Llama models
         "llama-3.1-8b-instant": "groq",
-        "llama3-70b-8192": "groq",
+        "llama-3.3-70b-versatile": "groq",
         "meta-llama/llama-4-scout-17b-16e-instruct": "groq",
         
         # OpenRouter models (identified by prefixes)
@@ -319,14 +318,26 @@ class ClaudeProvider(BaseLLMProvider):
     def is_available(self) -> bool:
         return self.client is not None
     
+
     def _map_model_name(self, model: str) -> str:
         """Map model names to Claude-specific identifiers. Assumes model is already lowercase."""
-        model_mapping = {
-            "claude-3.5-sonnet": "claude-3-5-sonnet-20240620",
-            "claude-3-opus": "claude-3-opus-20240229",
-            "claude-3-haiku": "claude-3-haiku-20240307"
-        }
-        return model_mapping.get(model, model)
+        model_lower = model.lower().strip()
+
+        # Handle friendly names with high priority, most specific first
+        if "haiku" in model_lower and ("3.5" in model_lower or "3-5" in model_lower):
+            return "claude-3-5-haiku-20241022"
+        if "sonnet" in model_lower and ("3.5" in model_lower or "3-5" in model_lower):
+            return "claude-3-5-sonnet-20240620"
+        if "opus" in model_lower:
+            return "claude-3-opus-20240229"
+        if "sonnet" in model_lower:
+            return "claude-3-sonnet-20240229"
+        if "haiku" in model_lower:
+            return "claude-3-haiku-20240307"
+
+        # Fallback for exact official names if the above logic doesn't catch them
+        return model
+
 
     async def _stream_response(self, model: str, system_content: str, 
                               messages: List[Dict[str, str]], temperature: float, 
@@ -408,17 +419,17 @@ class GeminiProvider(BaseLLMProvider):
         """
         model_lower = model.lower()
         if "flash" in model_lower:
-            return "gemini-1.5-flash-latest"
+            return "gemini-2.5-flash"
         if "pro" in model_lower:
-            return "gemini-1.5-pro-latest"
+            return "gemini-2.5-pro"
         
         # Fallback for exact matches of official names if user provides them
         model_mapping = {
-            "gemini-1.5-pro-latest": "gemini-1.5-pro-latest",
-            "gemini-1.5-flash-latest": "gemini-1.5-flash-latest",
+            "gemini-2.5-pro": "gemini-2.5-pro",
+            "gemini-2.5-flash-lite-preview-06-1": "gemini-2.5-flash-lite-preview-06-1",
         }
         # Default to a safe, fast fallback if no match is found
-        return model_mapping.get(model_lower, "gemini-1.5-flash-latest")
+        return model_mapping.get(model_lower, "gemini-2.5-flash-lite-preview-06-1")
     
     def _convert_messages_for_gemini(self, messages: List[Dict[str, str]]) -> Tuple[Optional[str], List[Dict[str, Any]]]:
         """Convert messages to Gemini format, separating the system prompt."""
@@ -500,11 +511,11 @@ class GroqProvider(BaseLLMProvider):
     def _map_model_name(self, model: str) -> str:
         """Map model names to Groq-available models. Assumes model is already lowercase."""
         if "70b" in model:
-            return "llama3-70b-8192"
+            return "llama-3.3-70b-versatile"
         if "8b" in model:
             return "llama-3.1-8b-instant"
         if "scout" in model:
-            return "meta-llama/Llama-4-scout-17B-16E-Instruct"
+            return "meta-llama/llama-4-scout-17b-16e-instruct"
         return model 
     
     async def _stream_response(self, messages: List[Dict[str, str]], model: str, 
@@ -666,7 +677,7 @@ class LLMManager:
                 model="text-embedding-3-small"
             )
 
-    # --- START: ADD THIS NEW HELPER FUNCTION ---
+
     def _sanitize_messages(self, messages: List[Any]) -> List[Dict[str, str]]:
         """
         Sanitizes the messages list to ensure it only contains valid dictionaries.

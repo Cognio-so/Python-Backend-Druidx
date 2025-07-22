@@ -79,7 +79,7 @@ except ImportError:
     QDRANT_AVAILABLE = False
     logging.warning("Qdrant client not found. Vector search will be unavailable.")
 
-# --- START: ADD VISION-RELATED IMPORTS ---
+# ADD VISION-RELATED IMPORTS ---
 try:
     import anthropic
     CLAUDE_AVAILABLE = True
@@ -107,7 +107,7 @@ try:
 except ImportError:
     IMAGE_PROCESSING_AVAILABLE = False
     logging.warning("Pillow not found. Image processing will have limited fallbacks.")
-# --- END: ADD VISION-RELATED IMPORTS ---
+# ADD VISION-RELATED IMPORTS ---
 
 
 # BM25 for hybrid search (Enhanced with robust fallback like rag.py)
@@ -343,9 +343,8 @@ class RAGConfig:
     retrieval_k: int = 5
     use_hybrid_search: bool = True
     
-    # --- START: ADD VISION-RELATED CONFIG ---
     image_extensions: Tuple[str, ...] = field(default_factory=lambda: (".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tiff", ".webp"))
-    # --- END: ADD VISION-RELATED CONFIG ---
+
 
     # Storage settings (NEW - integrated from rag.py pattern)
     temp_processing_path: str = field(default_factory=lambda: os.getenv("TEMP_PROCESSING_PATH", "local_rag_data/temp_downloads"))
@@ -459,8 +458,6 @@ class RAGConfig:
 
 class DocumentProcessor:
     """Handles document loading and processing with R2 Storage integration"""
-    
-    # --- START: MODIFY __init__ TO ACCEPT RAGPipeline ---
     def __init__(self, config: RAGConfig, r2_storage_client: Optional['CloudflareR2Storage'], rag_pipeline: 'RAGPipeline'):
         self.config = config
         self.r2_storage_client = r2_storage_client
@@ -471,7 +468,6 @@ class DocumentProcessor:
             length_function=len,
         )
         os.makedirs(config.temp_processing_path, exist_ok=True)
-    # --- END: MODIFY __init__ ---
 
     async def load_documents_from_files(self, file_paths: List[str]) -> List[Document]:
         documents = []
@@ -513,7 +509,6 @@ class DocumentProcessor:
         metadata = {"source": source_url, "title": os.path.basename(urlparse(source_url).path)}
         
         try:
-            # --- START: ADD IMAGE HANDLING LOGIC ---
             if file_extension in self.config.image_extensions:
                 if self.rag_pipeline.has_vision_capability:
                     logger.info(f"👁️ Processing image file: {source_url}")
@@ -523,7 +518,6 @@ class DocumentProcessor:
                 else:
                     logger.warning(f"⚠️ Skipping image file {source_url} as configured model lacks vision capabilities.")
                 return []
-            # --- END: ADD IMAGE HANDLING LOGIC ---
 
             if file_extension == '.pdf':
                 try:
@@ -821,11 +815,8 @@ class RAGPipeline:
         self.config = config
         self.r2_storage_client = r2_storage_client or (CloudflareR2Storage() if STORAGE_AVAILABLE else None)
         
-        # --- START: MODIFY DocumentProcessor INITIALIZATION ---
         # Pass `self` (the RAGPipeline instance) to the DocumentProcessor
         self.document_processor = DocumentProcessor(config, self.r2_storage_client, self)
-        # --- END: MODIFY DocumentProcessor INITIALIZATION ---
-
         self.vector_store_manager = VectorStoreManager(config, qdrant_client=qdrant_client)
         
         
@@ -837,7 +828,6 @@ class RAGPipeline:
             llm_config = config.to_llm_config()
             self.llm_manager = LLMManager(llm_config)
         
-        # --- START: INITIALIZE PROVIDER CLIENTS FOR VISION ---
         # These clients are used *only* for vision, bypassing the LLMManager
         # which doesn't support multimodal inputs in its current form.
         timeout_config = httpx.Timeout(connect=15.0, read=180.0, write=15.0, pool=15.0)
@@ -849,21 +839,20 @@ class RAGPipeline:
         else:
             self.vision_gemini_client = None
         self.vision_groq_client = AsyncGroq(api_key=self.config.groq_api_key) if GROQ_AVAILABLE and self.config.groq_api_key else None
-        # --- END: INITIALIZE PROVIDER CLIENTS FOR VISION ---
 
-        # --- START: ADD VISION CAPABILITY CHECK ---
+
         self.has_vision_capability = self.config.llm_model.lower() in [
             "gpt-4o", "gpt-4o-mini", "gpt-4-vision", "gpt-4-turbo",
-            "gemini-1.5-pro", "gemini-1.5-flash", "gemini-1.5-pro-latest", "gemini-1.5-flash-latest",
-            "claude-3-opus-20240229", "claude-3-sonnet-20240229", "claude-3-haiku-20240307", "claude-3.5-sonnet-20240620",
-            "llava-v1.5-7b"
+            "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite-preview-06-17", "gemini-2.0-flash",
+            "claude-3-opus-20240229", "claude-3-sonnet-20240229", "claude-3-5-haiku-20241022", "claude-3.5-sonnet-20240620",
+            "meta-llama/llama-4-scout-17b-16e-instruct"
         ] or "vision" in self.config.llm_model.lower()
 
         if self.has_vision_capability:
             logger.info(f"✅ Vision capabilities ENABLED for model: {self.config.llm_model}")
         else:
             logger.warning(f"⚠️ Vision capabilities DISABLED for model: {self.config.llm_model}. Image files will be skipped.")
-        # --- END: ADD VISION CAPABILITY CHECK ---
+
 
         # MODIFIED: Use a single `retriever` attribute for the ensemble retriever
         self.retriever = None
@@ -876,7 +865,6 @@ class RAGPipeline:
         
         logger.info(f"✅ RAG Pipeline initialized with {'R2 storage' if self.r2_storage_client else 'no storage'}")
     
-    # --- START: ADD VISION PROCESSING METHOD ---
     async def _process_image_with_vision(self, image_data: bytes) -> Optional[str]:
         """Process an image using a vision-capable model, returning a text description."""
         if not self.has_vision_capability:
@@ -906,7 +894,7 @@ class RAGPipeline:
 
             # Gemini Models
             elif "gemini" in model_name and self.vision_gemini_client:
-                vision_model = "gemini-1.5-flash" if "flash" in model_name else "gemini-1.5-pro"
+                vision_model = "gemini-2.0-flash-preview-image-generation" if "flash" in model_name else "gemini-2.5-pro"
                 logger.info(f"Using Gemini model '{vision_model}' for vision analysis.")
                 model_instance = self.vision_gemini_client.GenerativeModel(vision_model)
                 response = await model_instance.generate_content_async([prompt_text, {"mime_type": "image/jpeg", "data": base64.b64decode(base64_image)}])
@@ -919,9 +907,9 @@ class RAGPipeline:
                     "claude-3-opus": "claude-3-opus-20240229",
                     "claude-3.5-sonnet": "claude-3-5-sonnet-20240620",
                     "claude-3-sonnet": "claude-3-sonnet-20240229",
-                    "claude-3-haiku": "claude-3-haiku-20240307",
+                    "claude-3-haiku": "claude-3-5-haiku-20241022",
                 }
-                vision_model = next((v for k, v in vision_model_map.items() if k in model_name), "claude-3-haiku-20240307")
+                vision_model = next((v for k, v in vision_model_map.items() if k in model_name), "claude-3-5-haiku-20241022")
                 logger.info(f"Using Anthropic model '{vision_model}' for vision analysis.")
                 response = await self.vision_anthropic_client.messages.create(
                     model=vision_model,
@@ -946,7 +934,6 @@ class RAGPipeline:
                     logger.error(f"Pillow fallback failed: {img_e}")
 
         return "[Image file could not be processed.]"
-    # --- END: ADD VISION PROCESSING METHOD ---
 
     async def initialize(self):
         """Initialize the RAG pipeline"""
