@@ -2,7 +2,9 @@ import boto3
 import requests
 import os
 from typing import List, Optional, Tuple, Union
-from botocore.exceptions import ClientError
+# --- START: MODIFIED IMPORT ---
+from botocore.exceptions import ClientError, EndpointConnectionError
+# --- END: MODIFIED IMPORT ---
 import hashlib
 from urllib.parse import urlparse
 import shutil
@@ -148,6 +150,17 @@ class CloudflareR2Storage:
                 
                 logger.info(f"✅ File '{filename}' uploaded successfully to R2: {file_url}")
                 return True, file_url
+            # --- START: MODIFIED EXCEPTION HANDLING ---
+            except EndpointConnectionError as e:
+                error_msg = (
+                    f"CRITICAL: Could not connect to the R2 endpoint. "
+                    f"Please verify your CLOUDFLARE_ACCOUNT_ID and network configuration. Error: {e}"
+                )
+                logger.error(error_msg)
+                if not is_user_doc:
+                    return self._upload_local_kb(file_data, filename)
+                return False, error_msg
+            # --- END: MODIFIED EXCEPTION HANDLING ---
             except Exception as e:
                 logger.error(f"CRITICAL: R2 upload failed for '{filename}': {e}. Attempting fallback for KB doc.")
                 if not is_user_doc:

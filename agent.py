@@ -6,6 +6,8 @@ from datetime import datetime
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Union, AsyncGenerator, Tuple
 from urllib.parse import urlparse
+from llm_model import LLMManager
+from qdrant_client import QdrantClient
 
 # Core imports
 import httpx
@@ -123,37 +125,58 @@ class ChatbotConfig:
     web_search_max_results: int = 5
     
     # System Prompts - FIXED: Strict context-only responses
-    default_system_prompt: str = """You are a helpful AI assistant that synthesizes information to answer user questions.
+    default_system_prompt: str = """You are Insight Agent, a precision AI assistant. Your primary mission is to provide accurate, clear, and trustworthy answers based **exclusively** on the information provided to you in the 'CONTEXT' section.
 
-📌 **CRITICAL RESPONSE RULES - NO EXCEPTIONS:**
-- **ONLY use information from the provided context** - tell based on my knowledge and add general knowledge
-- **If context is insufficient, explicitly state:** "I don't have enough information in the provided context to answer this question."
-- **For web search results, ALWAYS include the complete URL**
-- **Give detailed responses when web search context is available**
+---
+### 🚨 **Core Directives: Non-Negotiable Rules**
+---
 
-✅ **MANDATORY STYLE & FORMAT:**
-- 🏷️ Start with an emoji + quick headline
-- 📋 Use bullets or short paragraphs for clarity
-- 💡 Emphasize main points
-- 😊 Make it friendly and human
-- 🤝 End with a light follow-up to keep the chat going
-- **MANDATORY: Cite sources for ALL information used**
+1.  **ABSOLUTE CONTEXT ADHERENCE:** Your entire response MUST be derived from the provided context. NEVER use your own general knowledge, make assumptions, or fill in gaps. If the context does not contain the answer, you MUST state it directly using the specified protocol below. This is your most important rule.
 
-CRITICAL: If the provided context doesn't contain information to answer the question, clearly state that instead of guessing or using general knowledge.
+2.  **MANDATORY STARTING FORMAT:** Every single response you generate MUST begin with an emoji followed by a bolded headline.
+    *   **Format:** `🏷️ **Your Concise Headline Here**`
+    *   **Example:** `📊 **Quarterly Report Summary**`
 
-✅ **EXAMPLE RESPONSE FORMAT for WEB SEARCH:**
-This is a summary of the topic [1]. It has several key features [2][3].
+3.  **UNFAILING CITATIONS:** Every piece of information, every fact, and every number you present MUST be immediately followed by its source citation. There are no exceptions.
+    *   **For Knowledge Base or User Documents:** Cite using the document's name.
+        *   *Example:* "The project's budget was $50,000 [Source: project_plan.pdf]."
+    *   **For Web Search Results:** Cite using the numbered index `[1]`, `[2]`, etc. The full URLs corresponding to these numbers will be provided to the user automatically.
+        *   *Example:* "The new model was released last week [1]."
+    *   **Multiple Sources:** If a sentence synthesizes information from multiple sources, cite all of them.
+        *   *Example:* "The market is expected to grow by 10% [1, Source: market_analysis.docx]."
 
-**Key Features:**
-*   Feature A is described here [1].
-*   Feature B has these properties [3].
+4.  **INSUFFICIENT INFORMATION PROTOCOL:** If you cannot find an answer to the user's question within the provided context, you MUST use the following exact response and nothing else:
+    *   `🏷️ **Information Not Available**`
+    *   `I could not find an answer to your question in the provided context.`
 
-This concludes the detailed explanation [1][2][3].
+---
+### ⚙️ **Operational Workflow & Style**
+---
 
-Citations:
-[1] https://example.com/source1
-[2] https://example.com/source2
-[3] https://example.com/source3
+1.  **SYNTHESIZE CONTEXT:**
+    *   Carefully review all provided context from `📚 KNOWLEDGE BASE`, `📄 USER-PROVIDED DOCUMENTS`, and `🌐 WEB SEARCH RESULTS`.
+    *   If sources conflict, prioritize them in this order: User Documents > Knowledge Base > Web Search. Acknowledge the discrepancy if it is significant (e.g., "While one source states X [Source: doc_a.pdf], another suggests Y [1].").
+
+2.  **COMPOSE THE RESPONSE:**
+    *   Write a clear, concise answer to the user's question using ONLY the synthesized, cited information.
+    *   Use bullet points for lists or sequences of steps to enhance readability.
+    *   Use `**bold**` formatting to highlight key terms or conclusions.
+    *   Maintain a helpful, professional, and confident tone.
+
+---
+### 🛠️ **Specialized Task Handling**
+---
+
+*   **TOOL (MCP) RESULTS:** If the user's query was directed at a tool (e.g., `@perplexity`), the output you receive is from that external tool. Introduce it clearly.
+    *   *Example:* `🤖 **Perplexity Tool Results**\n\nHere is the information provided by the Perplexity tool:` followed by the tool's output.
+
+*   **LISTING DOCUMENTS:** If the user asks what documents you have access to, format the response as a simple, clean, bulleted list.
+    *   *Example:* `🏷️ **Available Documents**\n\nI have access to the following documents:\n* `document_one.pdf`\n* `annual_report.docx`
+
+*   **GREETINGS & CASUAL CONVERSATION:** If the user provides a simple greeting (e.g., "hello", "thank you"), respond naturally and conversationally without applying the strict RAG formatting rules.
+    *   *Example:* `👋 Hello! How can I help you today?`
+
+**FINAL REMINDER: YOUR AUTHORITY IS THE PROVIDED CONTEXT AND NOTHING ELSE. YOUR VALUE IS IN YOUR TRUSTWORTHINESS AND PRECISION. DO NOT DEVIATE.**
 """
     
     @classmethod
@@ -276,7 +299,11 @@ class ChatbotAgent:
     Now includes proper CloudflareR2Storage integration matching rag.py pattern
     """
     
-    def __init__(self, config: Optional[ChatbotConfig] = None, storage_client: Optional['CloudflareR2Storage'] = None):
+    def __init__(self, 
+                config: Optional[ChatbotConfig] = None, 
+                storage_client: Optional['CloudflareR2Storage'] = None,
+                llm_manager: Optional[LLMManager] = None,
+                qdrant_client: Optional[QdrantClient] = None):         
         """Initialize the chatbot agent with all integrated modules including storage"""
         self.config = config or ChatbotConfig.from_env()
         
@@ -284,9 +311,14 @@ class ChatbotAgent:
         self.sessions: Dict[str, ChatMessageHistory] = {}
         self.session_contexts: Dict[str, Dict[str, Any]] = {}
         
+        # --- START: Store pre-initialized clients ---
+        self.llm_manager = llm_manager
+        self.qdrant_client = qdrant_client
+        # --- END: Store pre-initialized clients ---
+
         # Initialize storage system FIRST (CRITICAL)
         self.storage_client = storage_client
-        self._initialize_storage()
+        self._initialize_storage() # This will use the provided client if available
         
         # Initialize all modules with storage integration
         self._initialize_modules()
@@ -309,6 +341,7 @@ class ChatbotAgent:
         if LANGSMITH_AVAILABLE and self.config.langsmith_api_key:
             os.environ["LANGSMITH_API_KEY"] = self.config.langsmith_api_key
             os.environ["LANGSMITH_TRACING"] = "true"
+            LANGSMITH_ENDPOINT="https://api.smith.langchain.com"
             logger.info("✅ LangSmith tracing enabled")
     
     def _initialize_storage(self):
@@ -344,19 +377,29 @@ class ChatbotAgent:
     def _initialize_modules(self):
         """Initialize all integrated modules with proper error handling and storage integration"""
         try:
-            # Initialize LLM Manager
-            if LLM_MODEL_AVAILABLE:
-                llm_config = self.config.to_llm_config()
-                self.llm_manager = LLMManager(llm_config)
-                logger.info("✅ LLM Manager initialized")
+            # --- START: Use the provided LLM Manager ---
+            if not self.llm_manager:
+                logger.warning("No global LLM Manager provided, creating a local instance.")
+                if LLM_MODEL_AVAILABLE:
+                    llm_config = self.config.to_llm_config()
+                    self.llm_manager = LLMManager(llm_config)
+                else:
+                    self.llm_manager = None
+                    logger.error("❌ LLM Manager not available")
             else:
-                self.llm_manager = None
-                logger.error("❌ LLM Manager not available")
+                logger.info("✅ Agent is using the global LLM Manager.")
             
             # Initialize RAG Pipeline with storage integration (CRITICAL)
             if RAG_CODE_AVAILABLE:
+                # FIX: Create the RAG configuration object from the main ChatbotConfig
                 rag_config = self.config.to_rag_config(self.storage_client)
-                self.rag_pipeline = RAGPipeline(rag_config)
+
+                self.rag_pipeline = RAGPipeline(
+                   config=rag_config, 
+                   r2_storage_client=self.storage_client,
+                   llm_manager=self.llm_manager,
+                   qdrant_client=self.qdrant_client
+                   )
                 logger.info("✅ RAG Pipeline initialized with storage integration")
             else:
                 self.rag_pipeline = None
@@ -365,7 +408,7 @@ class ChatbotAgent:
             # Initialize Web Search with storage integration
             if WEBSEARCH_AVAILABLE:
                 websearch_config = self.config.to_websearch_config(self.storage_client)
-                self.web_search = WebSearch(config=websearch_config)
+                self.web_search = WebSearch(config=websearch_config, llm_manager=self.llm_manager)
                 logger.info("✅ Web Search initialized with storage integration")
             else:
                 self.web_search = None
@@ -374,7 +417,7 @@ class ChatbotAgent:
             # Initialize MCP Core with storage integration
             if MCP_CORE_AVAILABLE:
                 mcp_config = self.config.to_mcp_config(self.storage_client)
-                self.mcp_core = MCPCore(config=mcp_config)
+                self.mcp_core = MCPCore(config=mcp_config, llm_manager=self.llm_manager)
                 logger.info("✅ MCP Core initialized with storage integration")
             else:
                 self.mcp_core = None
@@ -642,30 +685,34 @@ class ChatbotAgent:
         def format_documents(docs: List[Document]) -> str:
             """
             Enhanced document formatting that creates inline citation markers and a final citation list.
-            It strictly separates web URLs from knowledge base sources.
+            It strictly separates web URLs from knowledge base/user document sources.
             """
             if not docs:
                 return "No relevant documents found."
 
             url_to_index_map: Dict[str, int] = {}
-            citations: List[str] = []
+            web_citations: List[str] = []
             formatted_context_parts = []
-            
+
             # --- Categorize and build citation list ---
             web_docs_content = []
             kb_docs_content = []
             user_docs_content = []
-            
+
             for doc in docs:
                 source_type = doc.metadata.get("source_type", "")
-                is_web = source_type == "web_search" or "http" in doc.metadata.get("url", "")
+                # Check if it's a web search result by source_type or if the source is a non-file URL
+                is_web = source_type == "web_search" or (
+                    "http" in doc.metadata.get("source", "") and not doc.metadata.get("source", "").startswith("file://")
+                )
                 is_user = "user" in source_type or "user" in doc.metadata.get("source", "").lower()
 
                 if is_web:
-                    url = doc.metadata.get("url")
+                    url = doc.metadata.get("url", doc.metadata.get("source")) # Use URL from metadata if available
                     if url and url not in url_to_index_map:
-                        url_to_index_map[url] = len(citations) + 1
-                        citations.append(url)
+                        url_to_index_map[url] = len(web_citations) + 1
+                        web_citations.append(url)
+                    # Add a citation index only for web documents
                     doc.metadata["citation_index"] = url_to_index_map.get(url, 0)
                     web_docs_content.append(doc)
                 elif is_user:
@@ -673,35 +720,44 @@ class ChatbotAgent:
                 else:
                     kb_docs_content.append(doc)
 
-            # --- Format sections ---
+            # --- Format sections for the LLM ---
             if web_docs_content:
                 formatted_context_parts.append("## 🌐 **WEB SEARCH RESULTS**")
                 for doc in web_docs_content:
                     title = doc.metadata.get('title', 'Web Result')
                     content = doc.page_content.strip()
+                    # Inline citation marker like [1], [2], etc.
                     citation_marker = f" [{doc.metadata['citation_index']}]" if doc.metadata.get('citation_index') else ""
                     formatted_context_parts.append(f"### 📰 **{title}**\n**Content:** {content}{citation_marker}")
 
             if user_docs_content:
                 formatted_context_parts.append("---" if formatted_context_parts else "")
                 formatted_context_parts.append("## 📄 **USER-PROVIDED DOCUMENTS**")
-                for i, doc in enumerate(user_docs_content, 1):
-                    source = doc.metadata.get('source', f'User Document {i}')
+                for doc in user_docs_content:
+                    source_url = doc.metadata.get('source', 'Unknown User Document')
+                    # Extract just the filename for the citation
+                    doc_name = os.path.basename(urlparse(source_url).path)
                     content = doc.page_content.strip()
-                    formatted_context_parts.append(f"### 📄 **{os.path.basename(urlparse(source).path)}**\n**Content:** {content}")
+                    # Inline citation using the document name
+                    citation_marker = f" [Source: {doc_name}]"
+                    formatted_context_parts.append(f"### 📄 **Source:** {doc_name}\n**Content:** {content}{citation_marker}")
 
             if kb_docs_content:
                 formatted_context_parts.append("---" if formatted_context_parts else "")
                 formatted_context_parts.append("## 📚 **KNOWLEDGE BASE**")
-                for i, doc in enumerate(kb_docs_content, 1):
-                    source = os.path.basename(urlparse(doc.metadata.get('source', f'Knowledge Base Document {i}')).path)
+                for doc in kb_docs_content:
+                    source_url = doc.metadata.get('source', 'Unknown KB Document')
+                    # Extract just the filename for the citation
+                    doc_name = os.path.basename(urlparse(source_url).path)
                     content = doc.page_content.strip()
-                    formatted_context_parts.append(f"### 📚 **Source:** {source}\n**Content:** {content}")
-            
-            # --- Append citation list ---
-            if citations:
+                    # Inline citation using the document name
+                    citation_marker = f" [Source: {doc_name}]"
+                    formatted_context_parts.append(f"### 📚 **Source:** {doc_name}\n**Content:** {content}{citation_marker}")
+
+            # --- Append the URL citation list ONLY for web search results ---
+            if web_citations:
                 formatted_context_parts.append("---\n## 🔗 **CITATIONS**")
-                for i, url in enumerate(citations, 1):
+                for i, url in enumerate(web_citations, 1):
                     formatted_context_parts.append(f"[{i}] {url}")
 
             return "\n\n".join(formatted_context_parts)
@@ -736,7 +792,7 @@ class ChatbotAgent:
 
 💬 **USER QUESTION:** {question}
 
-CRITICAL INSTRUCTION: Your response MUST follow all rules in the system prompt. Synthesize an answer to the user's question using ONLY the provided context. Add citation markers (e.g., `[1]`) to each sentence and include a "Citations" list at the end.""")
+CRITICAL INSTRUCTION: Your response MUST follow all rules in the system prompt. Synthesize an answer to the user's question using ONLY the provided context. Add citations for every piece of information as instructed: use `[Source: Document Name]` for documents and `[1]` for web results.""")
         ])
 
         # Create the RAG chain using LCEL
@@ -843,7 +899,8 @@ CRITICAL INSTRUCTION: Your response MUST follow all rules in the system prompt. 
                         mcp_schema=mcp_schema,
                         chat_history=chat_history,
                         api_keys=api_keys,
-                        detected_server_name=intent_analysis.get("mcp_server")
+                        detected_server_name=intent_analysis.get("mcp_server"),
+                        model_override=model_override
                     ):
                         if response.get("type") == "content":
                             response_parts.append(response.get("data", ""))
@@ -1256,7 +1313,8 @@ Use appropriate emojis sparingly and end with an open question or invitation to 
                         mcp_schema=mcp_schema,
                         chat_history=chat_history,
                         api_keys=api_keys,
-                        detected_server_name=intent_analysis.get("mcp_server")
+                        detected_server_name=intent_analysis.get("mcp_server"),
+                        model_override=model_override
                     ):
                         if response.get("type") == "content":
                             content = response.get("data", "")

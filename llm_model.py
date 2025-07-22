@@ -104,29 +104,61 @@ class LLMConfig:
     current_time = datetime.now()
     formatted_time = current_time.strftime("%Y-%m-%d %H:%M:%S")
     # System prompts
-    default_system_prompt: str = """You are a helpful AI assistant that provides accurate and informative responses based on the provided context.
+    default_system_prompt: str = """You are Insight Agent, a precision AI assistant. Your primary mission is to provide accurate, clear, and trustworthy answers based **exclusively** on the information provided to you in the 'CONTEXT' section.
     f"🕒 **Current Time:** {formatted_time}\n\n"
     f"📘 **CONTEXT:**\n{context_str}\n\n"
-📌 **RESPONSE RULES:**
-- Keep it **short and conversational**, like you're chatting with a friend.
-- Use **only the given context**. Don't guess or assume.
-- If the context isn't enough, say that clearly and briefly.
-- Use *General Insight:* only when adding general knowledge.
-- Give **longer or detailed replies only when web search is involved**.
-- For follow-up questions, focus on providing NEW information that wasn't covered in previous answers.
-- For 'tell me more' requests, provide additional details or examples not mentioned before.
-- If recognizing a reference to something previously discussed, provide fresh information about that entity.
-- For date questions, reply in format: DD/MM/YYYY (Day of week), and say **nothing else**, do not give any other information.
 
-✅ **STYLE & FORMAT:**
-- 🏷️ Start with an emoji + quick headline
-- 📋 Use bullets or short paras for clarity
-- 💡 Emphasize main points
-- 😊 Make it friendly and human
-- 🤝 If it makes sense, end with a light follow-up to keep the chat going
-- For short follow-up queries like 'make it shorter', 'in one line', etc., apply the formatting instruction to your previous response.
+---
+### 🚨 **Core Directives: Non-Negotiable Rules**
+---
 
-Use the provided context to answer questions accurately. If the context doesn't contain enough information, say so and provide the best answer you can with available information."""
+1.  **ABSOLUTE CONTEXT ADHERENCE:** Your entire response MUST be derived from the provided context. NEVER use your own general knowledge, make assumptions, or fill in gaps. If the context does not contain the answer, you MUST state it directly using the specified protocol below. This is your most important rule.
+
+2.  **MANDATORY STARTING FORMAT:** Every single response you generate MUST begin with an emoji followed by a bolded headline.
+    *   **Format:** `🏷️ **Your Concise Headline Here**`
+    *   **Example:** `📊 **Quarterly Report Summary**`
+
+3.  **UNFAILING CITATIONS:** Every piece of information, every fact, and every number you present MUST be immediately followed by its source citation. There are no exceptions.
+    *   **For Knowledge Base or User Documents:** Cite using the document's name.
+        *   *Example:* "The project's budget was $50,000 [Source: project_plan.pdf]."
+    *   **For Web Search Results:** Cite using the numbered index `[1]`, `[2]`, etc. The full URLs corresponding to these numbers will be provided to the user automatically.
+        *   *Example:* "The new model was released last week [1]."
+    *   **Multiple Sources:** If a sentence synthesizes information from multiple sources, cite all of them.
+        *   *Example:* "The market is expected to grow by 10% [1, Source: market_analysis.docx]."
+
+4.  **INSUFFICIENT INFORMATION PROTOCOL:** If you cannot find an answer to the user's question within the provided context, you MUST use the following exact response and nothing else:
+    *   `🏷️ **Information Not Available**`
+    *   `I could not find an answer to your question in the provided context.`
+
+---
+### ⚙️ **Operational Workflow & Style**
+---
+
+1.  **SYNTHESIZE CONTEXT:**
+    *   Carefully review all provided context from `📚 KNOWLEDGE BASE`, `📄 USER-PROVIDED DOCUMENTS`, and `🌐 WEB SEARCH RESULTS`.
+    *   If sources conflict, prioritize them in this order: User Documents > Knowledge Base > Web Search. Acknowledge the discrepancy if it is significant (e.g., "While one source states X [Source: doc_a.pdf], another suggests Y [1].").
+
+2.  **COMPOSE THE RESPONSE:**
+    *   Write a clear, concise answer to the user's question using ONLY the synthesized, cited information.
+    *   Use bullet points for lists or sequences of steps to enhance readability.
+    *   Use `**bold**` formatting to highlight key terms or conclusions.
+    *   Maintain a helpful, professional, and confident tone.
+
+---
+### 🛠️ **Specialized Task Handling**
+---
+
+*   **TOOL (MCP) RESULTS:** If the user's query was directed at a tool (e.g., `@perplexity`), the output you receive is from that external tool. Introduce it clearly.
+    *   *Example:* `🤖 **Perplexity Tool Results**\n\nHere is the information provided by the Perplexity tool:` followed by the tool's output.
+
+*   **LISTING DOCUMENTS:** If the user asks what documents you have access to, format the response as a simple, clean, bulleted list.
+    *   *Example:* `🏷️ **Available Documents**\n\nI have access to the following documents:\n* `document_one.pdf`\n* `annual_report.docx`
+
+*   **GREETINGS & CASUAL CONVERSATION:** If the user provides a simple greeting (e.g., "hello", "thank you"), respond naturally and conversationally without applying the strict RAG formatting rules.
+    *   *Example:* `👋 Hello! How can I help you today?`
+
+**FINAL REMINDER: YOUR AUTHORITY IS THE PROVIDED CONTEXT AND NOTHING ELSE. YOUR VALUE IS IN YOUR TRUSTWORTHINESS AND PRECISION. DO NOT DEVIATE.**
+"""
     
     # Supported models mapping
     model_providers: Dict[str, str] = field(default_factory=lambda: {
@@ -647,6 +679,12 @@ class LLMManager:
             
         for i, msg in enumerate(messages):
             if isinstance(msg, dict) and "role" in msg and "content" in msg:
+                # FIX: Sanitize the role value itself.
+                role = msg.get("role")
+                if role == "human":
+                    msg["role"] = "user"
+                elif role == "ai":
+                    msg["role"] = "assistant"
                 sanitized_list.append(msg)
             # This case handles the exact error: converting a tuple to the correct dict format
             elif isinstance(msg, tuple) and len(msg) == 2:
@@ -726,19 +764,18 @@ class LLMManager:
     
     @traceable(name="llm_generate_response") if LANGSMITH_AVAILABLE else lambda f: f
     async def generate_response(
-        self, 
-        messages: List[Dict[str, str]], 
-        model: Optional[str] = None,
+        self,
+        messages: List[Dict[str, str]],
+        model: Optional[str] = None, # This is the user's preferred model
         stream: bool = False,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
         system_prompt: Optional[str] = None
     ) -> Union[str, AsyncGenerator[str, None]]:
         """
-        Generate response using the appropriate LLM provider.
-        This method now correctly returns an awaitable that resolves to either a string or an async generator.
+        Generate response using the appropriate LLM provider, with a fallback to the default model.
+        It first tries the user-provided model. If that fails, it falls back to the default model.
         """
-        # --- START: ADD THIS SANITIZATION CALL ---
         sanitized_messages = self._sanitize_messages(messages)
         if not sanitized_messages and messages:
             error_msg = "Error: The message list was malformed and could not be sanitized."
@@ -747,59 +784,69 @@ class LLMManager:
                 return error_stream()
             else:
                 return error_msg
-        # --- END: ADD THIS SANITIZATION CALL ---
 
-        raw_model = model or self.config.default_model
-        normalized_model = raw_model.lower().strip()
+        user_model_override = model.lower().strip() if model else None
+        default_model = self.config.default_model.lower().strip()
+
+        # Determine the sequence of models to try
+        models_to_try = []
+        if user_model_override:
+            models_to_try.append(user_model_override)
+        # Add default model if it's different from the user's choice
+        if default_model not in models_to_try:
+            models_to_try.append(default_model)
         
-        provider_name = self._get_provider_from_model(normalized_model)
+        # If no models are in the list (e.g., user override is the same as default), add the default one.
+        if not models_to_try:
+            models_to_try.append(default_model)
+
+        final_exception = None
         
+        # Add system prompt if provided
         if system_prompt:
             has_system = any(msg.get("role") == "system" for msg in sanitized_messages)
             if not has_system:
                 sanitized_messages = [{"role": "system", "content": system_prompt}] + sanitized_messages
-        
-        if provider_name in self.providers:
+
+        # Loop through the models to try
+        for i, model_to_attempt in enumerate(models_to_try):
+            is_fallback = i > 0
+            log_prefix = "Fallback" if is_fallback else "Primary"
+
             try:
-                logger.info(f"Generating response with {provider_name} provider using model {normalized_model}")
-                # The provider's generate_response is async and returns the final result (str or async_generator)
-                # MODIFIED: Pass the sanitized_messages list to the provider
-                return await self.providers[provider_name].generate_response(
-                    sanitized_messages, normalized_model, stream, temperature, max_tokens
-                )
-            except Exception as e:
-                logger.error(f"Error with {provider_name} provider: {e}")
-                if provider_name != "openai" and "openai" in self.providers:
-                    logger.info("Falling back to OpenAI provider")
-                    try:
-                        fallback_model = "gpt-4o-mini"
-                        # MODIFIED: Pass the sanitized_messages list to the fallback provider
-                        return await self.providers["openai"].generate_response(
-                            sanitized_messages, fallback_model, stream, temperature, max_tokens
-                        )
-                    except Exception as fallback_e:
-                        error_msg = f"Error: All LLM providers failed. Primary: {str(e)}, Fallback: {str(fallback_e)}"
-                        logger.error(f"Fallback to OpenAI also failed: {fallback_e}")
-                        if stream:
-                            async def error_stream(): yield error_msg
-                            return error_stream()
-                        else:
-                            return error_msg
+                provider_name = self._get_provider_from_model(model_to_attempt)
+                
+                if provider_name in self.providers:
+                    logger.info(f"🤖 {log_prefix} Attempt: Generating response with {provider_name} provider using model '{model_to_attempt}'")
+                    
+                    # The provider's generate_response is async and returns the final result
+                    response = await self.providers[provider_name].generate_response(
+                        sanitized_messages, model_to_attempt, stream, temperature, max_tokens
+                    )
+                    
+                    # If we get here, the call was successful
+                    return response
                 else:
-                    error_msg = f"Error generating response with {provider_name}: {str(e)}"
-                    if stream:
-                        async def error_stream(): yield error_msg
-                        return error_stream()
-                    else:
-                        return error_msg
+                    # This provider is not available at all
+                    error_msg = f"Provider '{provider_name}' for model '{model_to_attempt}' is not available."
+                    logger.warning(f"⚠️ {log_prefix} Attempt Failed: {error_msg}")
+                    final_exception = ValueError(error_msg)
+                    continue # Try the next model in the list
+
+            except Exception as e:
+                logger.error(f"❌ {log_prefix} Attempt Failed: Error with {provider_name} provider (model: {model_to_attempt}): {e}")
+                final_exception = e
+                # Continue to the next model in the list (the fallback)
+                continue
+                
+        # If all attempts failed
+        error_msg = f"Error: All LLM providers failed. Last error: {str(final_exception)}"
+        logger.critical(f"💀 All LLM generation attempts failed. Final exception: {final_exception}")
+        if stream:
+            async def error_stream(): yield error_msg
+            return error_stream()
         else:
-            error_msg = f"Provider '{provider_name}' not available for model '{normalized_model}'. Available providers: {list(self.providers.keys())}"
-            logger.error(error_msg)
-            if stream:
-                async def error_stream(): yield error_msg
-                return error_stream()
-            else:
-                return error_msg
+            return error_msg
 
     @traceable(name="llm_analyze_query") if LANGSMITH_AVAILABLE else lambda f: f
     async def analyze_query(self, query: str, analysis_type: str = "general", model: Optional[str] = None) -> Dict[str, Any]:

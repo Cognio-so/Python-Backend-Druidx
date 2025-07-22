@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Union, AsyncGenerator, Tuple
 from abc import ABC, abstractmethod
 from urllib.parse import urlparse
+from llm_model import LLMManager
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -75,7 +76,7 @@ class MCPConfiguration:
     
     # Timeout settings for subprocesses and network calls
     default_timeout: int = 120  # Increased default timeout for long-running tools
-    json_read_timeout: float = 60.0 # Increased timeout for initial JSON-RPC handshake
+    json_read_timeout: float = 120.0 # Increased timeout for initial JSON-RPC handshake
     process_termination_timeout: float = 5.0 # Graceful termination period
     
     # Enhanced MCP server detection patterns, ordered by priority
@@ -134,12 +135,13 @@ class MCPCore:
     managing the JSON-RPC communication, and handling the lifecycle of the subprocess.
     """
     
-    def __init__(self, config: Optional[MCPConfiguration] = None):
+    def __init__(self, config: Optional[MCPConfiguration] = None, llm_manager: Optional[LLMManager] = None):
         """
         Initializes the MCP Core handler.
         
         Args:
             config: An MCPConfiguration object. If not provided, a default configuration is loaded.
+            llm_manager: A pre-initialized LLMManager instance.
         """
         self.config = config or MCPConfiguration.from_env()
         
@@ -148,19 +150,17 @@ class MCPCore:
         self.mcp_cleanup_lock = asyncio.Lock()
         
         # Initialize the centralized LLM Manager for query analysis if available
-        self.llm_manager = None
-        if LLM_MODEL_AVAILABLE:
-            try:
+        self.llm_manager = llm_manager
+        if not self.llm_manager:
+            logger.warning("No global LLM Manager provided to MCPCore, creating a local instance.")
+            if LLM_MODEL_AVAILABLE:
                 llm_config = self.config.to_llm_config()
                 if llm_config:
                     self.llm_manager = LLMManager(llm_config)
-                    logger.info("✅ LLM Manager initialized for MCP Core analysis.")
-            except Exception as e:
-                logger.error(f"❌ Failed to initialize LLM Manager: {e}")
-        else:
-            logger.warning("⚠️ LLM-based analysis features are disabled (llm_model.py not found).")
+            else:
+                logger.warning("⚠️ LLM-based analysis features are disabled (llm_model.py not found).")
 
-            self.storage_client = None
+        self.storage_client = None
 
     async def execute_mcp_request(
         self,
@@ -460,30 +460,50 @@ class MCPCore:
             # 6. Stream the response from the tool call
             while True:
                 response = await self._read_json_response(process.stdout, self.config.default_timeout)
-                if not response: break # Timeout or stream ended
+                if not response:
+                    logger.info(f"MCP server stream ended or timed out for PID {process.pid}.")
+                    break
 
-                if "result" in response:
+                # Case 1: Handle streaming content notifications from the server
+                if "method" in response and response["method"] == "text/content":
+                    content = response.get("params", {}).get("content", "")
+                    if content:
+                        yield str(content)
+                    continue # Continue listening for more chunks
+
+                # Case 2: Handle the final result of the tool call
+                if "result" in response and response.get("id") == 3: # Final response to tool call
                     result_data = response["result"]
                     content_to_yield = ""
+                    # The final result might also contain content, so we process it.
                     if isinstance(result_data, dict) and "content" in result_data:
                         content = result_data["content"]
                         if isinstance(content, list):
+                            # Handle structured content like in the original code
                             content_to_yield = "\n".join(item.get("text", "") for item in content if isinstance(item, dict) and item.get("type") == "text")
                         else:
                             content_to_yield = str(content)
-                    else:
+                    elif result_data: # Handle cases where the result is just a string or other primitive
                         content_to_yield = str(result_data)
-                    
-                    yield content_to_yield
-                
+
+                    if content_to_yield:
+                         yield content_to_yield
+
+                    logger.info(f"Received final result for tool call (id=3) for PID {process.pid}.")
+                    break # End of this specific tool call
+
+                # Case 3: Handle errors
                 elif "error" in response:
                     error_msg = response["error"].get("message", str(response["error"]))
+                    logger.error(f"MCP Server Error for PID {process.pid}: {error_msg}")
                     yield f"❌ MCP Server Error: {error_msg}"
                     break # Stop on error
-                
-                # Check if the response indicates the end of the tool call
-                if response.get("id") == 3: # Corresponds to the tool call request
-                    break
+
+                # Case 4: Handle other responses (like from 'initialize') that we don't need to yield
+                elif "result" in response:
+                    logger.info(f"Received non-final result (id={response.get('id')}): {str(response['result'])[:100]}...")
+
+                # Otherwise, it might be a notification we don't handle, so we just loop.
             
             # --- End JSON-RPC Communication ---
             

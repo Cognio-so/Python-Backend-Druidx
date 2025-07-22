@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 # Import the ChatbotAgent and related components
 try:
-    from agent import ChatbotAgent, ChatbotConfig, create_chatbot_agent
+    from agent import ChatbotAgent, ChatbotConfig
     AGENT_AVAILABLE = True
     logger.info("✅ ChatbotAgent imported successfully")
 except ImportError as e:
@@ -41,10 +41,23 @@ except ImportError:
     STORAGE_AVAILABLE = False
     logger.error("❌ Storage module not available. Please ensure storage.py is in the same directory.")
 
+try:
+    from llm_model import LLMManager, LLMConfig
+    from qdrant_client import QdrantClient
+    from rag_code import RAGConfig # To get Qdrant URL
+    LLM_MODEL_AVAILABLE = True
+    QDRANT_AVAILABLE = True
+except ImportError as e:
+    LLM_MODEL_AVAILABLE = False
+    QDRANT_AVAILABLE = False
+    logger.error(f"❌ Failed to import core clients (LLMManager, QdrantClient): {e}")
+
 # Global variables
 active_agents: Dict[str, ChatbotAgent] = {}
 agents_lock = asyncio.Lock()
 r2_storage: Optional[CloudflareR2Storage] = None
+global_llm_manager: Optional[LLMManager] = None
+global_qdrant_client: Optional[QdrantClient] = None
 
 # Initialize paths
 LOCAL_DATA_BASE_PATH = os.getenv("LOCAL_DATA_PATH", "local_rag_data")
@@ -73,7 +86,7 @@ async def cleanup_r2_expired_files():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifecycle, including the single R2 storage client."""
-    global r2_storage
+    global r2_storage, global_llm_manager, global_qdrant_client
     logger.info("🚀 Starting FastAPI application with ChatbotAgent middleware...")
     
     if STORAGE_AVAILABLE:
@@ -87,6 +100,27 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.error(f"❌ CRITICAL: Failed to initialize R2 storage on startup: {e}")
             r2_storage = None # Ensure it's None on failure
+
+    if LLM_MODEL_AVAILABLE:
+        try:
+            global_llm_manager = LLMManager(LLMConfig.from_env())
+            logger.info("✅ Global LLM Manager initialized successfully.")
+        except Exception as e:
+            logger.error(f"❌ CRITICAL: Failed to initialize Global LLM Manager: {e}")
+    
+    if QDRANT_AVAILABLE:
+        try:
+            rag_config = RAGConfig.from_env()
+            global_qdrant_client = QdrantClient(
+                url=rag_config.qdrant_url,
+                api_key=rag_config.qdrant_api_key,
+                timeout=30.0
+            )
+            # Perform a quick operation to "warm up" the connection
+            await asyncio.to_thread(global_qdrant_client.get_collections)
+            logger.info("✅ Global Qdrant Client initialized and connection warmed up.")
+        except Exception as e:
+            logger.error(f"❌ CRITICAL: Failed to initialize Global Qdrant Client: {e}")
     
     scheduler = AsyncIOScheduler()
     scheduler.add_job(cleanup_r2_expired_files, 'interval', hours=6)
@@ -98,6 +132,16 @@ async def lifespan(app: FastAPI):
     logger.info("🛑 Shutting down application...")
     scheduler.shutdown(wait=False)
     logger.info("✅ Scheduler stopped")
+
+    if global_llm_manager:
+        await global_llm_manager.cleanup()
+        logger.info("✅ Global LLM Manager cleaned up.")
+
+    if global_qdrant_client:
+        # Qdrant client might not have an async close, depends on version.
+        # Setting to None is sufficient if no explicit close method.
+        global_qdrant_client = None
+        logger.info("✅ Global Qdrant Client closed.")
     
     async with agents_lock:
         cleanup_tasks = [agent.cleanup() for agent in active_agents.values()]
@@ -215,7 +259,7 @@ async def get_or_create_agent(
     Get or create a ChatbotAgent, ensuring it uses the single, shared storage client.
     If config changes are detected, it replaces the existing agent with a new one.
     """
-    global r2_storage
+    global r2_storage, global_llm_manager, global_qdrant_client
     # Generate a unique and valid collection name from the gpt_id.
     qdrant_collection_name = sanitize_for_collection_name(gpt_id)
     agent_key = f"{user_id}_{gpt_id}"
@@ -236,7 +280,7 @@ async def get_or_create_agent(
             asyncio.create_task(old_agent.cleanup())
     
     try:
-        logger.info(f"🤖 Creating new ChatbotAgent for {agent_key} with collection '{qdrant_collection_name}'")
+        logger.info(f"🤖 Instantiating FAST ChatbotAgent for {agent_key} with collection '{qdrant_collection_name}'")
         config = ChatbotConfig.from_env()
 
         if api_keys:
@@ -255,8 +299,14 @@ async def get_or_create_agent(
         if not config.openai_api_key:
             raise ValueError("OpenAI API key is required but was not provided.")
 
-        # The create_chatbot_agent function will now use the config with the unique collection name.
-        agent = await create_chatbot_agent(config, storage_client=r2_storage)
+        # --- START: Pass global clients to the agent constructor ---
+        agent = ChatbotAgent(
+            config=config,
+            storage_client=r2_storage,
+            llm_manager=global_llm_manager,
+            qdrant_client=global_qdrant_client
+        )
+        await agent.initialize()
         
         async with agents_lock:
             active_agents[agent_key] = agent

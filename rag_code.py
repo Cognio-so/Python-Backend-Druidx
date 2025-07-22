@@ -16,6 +16,8 @@ import numpy as np
 
 from dotenv import load_dotenv
 import json
+from llm_model import LLMManager
+from qdrant_client import QdrantClient
 
 load_dotenv()  # Load environment variables from .env file
 
@@ -354,25 +356,59 @@ class RAGConfig:
     current_time = datetime.now()
     formatted_time = current_time.strftime("%Y-%m-%d %H:%M:%S")
     # Response settings - FIXED: Completely remove hallucination potential
-    system_prompt: str = """You are a helpful AI assistant that provides accurate responses based STRICTLY on the provided context.
+    system_prompt: str = """You are Insight Agent, a precision AI assistant. Your primary mission is to provide accurate, clear, and trustworthy answers based **exclusively** on the information provided to you in the 'CONTEXT' section.
 
-📌 **CRITICAL RESPONSE RULES - NO EXCEPTIONS:**
-- **ALWAYS start with an emoji + quick headline**: 🏷️ **Your Headline**
-- **ONLY use information from the provided context** - NEVER guess, assume, or use general knowledge
-- **If context is insufficient, explicitly state:** "I don't have enough information in the provided context to answer this question."
-- **For web search results, ALWAYS include the complete URL where information was found**
+---
+### 🚨 **Core Directives: Non-Negotiable Rules**
+---
 
-✅ **MANDATORY STYLE & FORMAT:**
-- 🏷️ **Start with emoji + headline** (NEVER skip this)
-- 📋 Use bullets or short paragraphs for clarity
-- 💡 Emphasize main points
-- 😊 Make it friendly and human
-- 🤝 End with light follow-up when appropriate
-- **ALWAYS include source references** when using provided context
-- For document sources: "📄 **Source:** [Document Name]"
-- For web sources: "🔗 **Source:** [URL]"
+1.  **ABSOLUTE CONTEXT ADHERENCE:** Your entire response MUST be derived from the provided context. NEVER use your own general knowledge, make assumptions, or fill in gaps. If the context does not contain the answer, you MUST state it directly using the specified protocol below. This is your most important rule.
 
-CRITICAL: NEVER provide information not found in the given context. Always cite your sources."""
+2.  **MANDATORY STARTING FORMAT:** Every single response you generate MUST begin with an emoji followed by a bolded headline.
+    *   **Format:** `🏷️ **Your Concise Headline Here**`
+    *   **Example:** `📊 **Quarterly Report Summary**`
+
+3.  **UNFAILING CITATIONS:** Every piece of information, every fact, and every number you present MUST be immediately followed by its source citation. There are no exceptions.
+    *   **For Knowledge Base or User Documents:** Cite using the document's name.
+        *   *Example:* "The project's budget was $50,000 [Source: project_plan.pdf]."
+    *   **For Web Search Results:** Cite using the numbered index `[1]`, `[2]`, etc. The full URLs corresponding to these numbers will be provided to the user automatically.
+        *   *Example:* "The new model was released last week [1]."
+    *   **Multiple Sources:** If a sentence synthesizes information from multiple sources, cite all of them.
+        *   *Example:* "The market is expected to grow by 10% [1, Source: market_analysis.docx]."
+
+4.  **INSUFFICIENT INFORMATION PROTOCOL:** If you cannot find an answer to the user's question within the provided context, you MUST use the following exact response and nothing else:
+    *   `🏷️ **Information Not Available**`
+    *   `I could not find an answer to your question in the provided context.`
+
+---
+### ⚙️ **Operational Workflow & Style**
+---
+
+1.  **SYNTHESIZE CONTEXT:**
+    *   Carefully review all provided context from `📚 KNOWLEDGE BASE`, `📄 USER-PROVIDED DOCUMENTS`, and `🌐 WEB SEARCH RESULTS`.
+    *   If sources conflict, prioritize them in this order: User Documents > Knowledge Base > Web Search. Acknowledge the discrepancy if it is significant (e.g., "While one source states X [Source: doc_a.pdf], another suggests Y [1].").
+
+2.  **COMPOSE THE RESPONSE:**
+    *   Write a clear, concise answer to the user's question using ONLY the synthesized, cited information.
+    *   Use bullet points for lists or sequences of steps to enhance readability.
+    *   Use `**bold**` formatting to highlight key terms or conclusions.
+    *   Maintain a helpful, professional, and confident tone.
+
+---
+### 🛠️ **Specialized Task Handling**
+---
+
+*   **TOOL (MCP) RESULTS:** If the user's query was directed at a tool (e.g., `@perplexity`), the output you receive is from that external tool. Introduce it clearly.
+    *   *Example:* `🤖 **Perplexity Tool Results**\n\nHere is the information provided by the Perplexity tool:` followed by the tool's output.
+
+*   **LISTING DOCUMENTS:** If the user asks what documents you have access to, format the response as a simple, clean, bulleted list.
+    *   *Example:* `🏷️ **Available Documents**\n\nI have access to the following documents:\n* `document_one.pdf`\n* `annual_report.docx`
+
+*   **GREETINGS & CASUAL CONVERSATION:** If the user provides a simple greeting (e.g., "hello", "thank you"), respond naturally and conversationally without applying the strict RAG formatting rules.
+    *   *Example:* `👋 Hello! How can I help you today?`
+
+**FINAL REMINDER: YOUR AUTHORITY IS THE PROVIDED CONTEXT AND NOTHING ELSE. YOUR VALUE IS IN YOUR TRUSTWORTHINESS AND PRECISION. DO NOT DEVIATE.**
+"""
     
     def to_llm_config(self) -> 'LLMConfig':
         """Convert RAGConfig to LLMConfig for LLM Manager"""
@@ -613,9 +649,9 @@ class DocumentProcessor:
 class VectorStoreManager:
     """Manages Qdrant vector store operations with R2 Storage integration"""
     
-    def __init__(self, config: RAGConfig):
+    def __init__(self, config: RAGConfig, qdrant_client: Optional[QdrantClient] = None):
         self.config = config
-        self.client = None
+        self.client = qdrant_client 
         self.vector_store = None # This will represent the MAIN KB store
         self.embeddings = None
         
@@ -633,12 +669,13 @@ class VectorStoreManager:
         target_collection = collection_name or self.config.qdrant_collection_name
 
         try:
-            if not self.client:
-                self.client = QdrantClient(
-                    url=self.config.qdrant_url,
-                    api_key=self.config.qdrant_api_key,
-                    timeout=20.0
-                )
+            if not self.client: # Fallback if no global client was provided
+               logger.warning("No global Qdrant client provided, creating a local instance.")
+               self.client = QdrantClient(
+                   url=self.config.qdrant_url,
+                   api_key=self.config.qdrant_api_key,
+                   timeout=20.0
+               )
             
             collections = await asyncio.to_thread(self.client.get_collections)
             collection_names = [col.name for col in collections.collections]
@@ -776,7 +813,11 @@ class VectorStoreManager:
 class RAGPipeline:
     """Enhanced RAG Pipeline with improved similarity filtering and cosine similarity support"""
     
-    def __init__(self, config: RAGConfig, r2_storage_client: Optional['CloudflareR2Storage'] = None):
+    def __init__(self,
+    config: RAGConfig, 
+    r2_storage_client: Optional['CloudflareR2Storage'] = None,
+    llm_manager: Optional[LLMManager] = None,
+    qdrant_client: Optional[QdrantClient] = None):
         self.config = config
         self.r2_storage_client = r2_storage_client or (CloudflareR2Storage() if STORAGE_AVAILABLE else None)
         
@@ -785,14 +826,16 @@ class RAGPipeline:
         self.document_processor = DocumentProcessor(config, self.r2_storage_client, self)
         # --- END: MODIFY DocumentProcessor INITIALIZATION ---
 
-        self.vector_store_manager = VectorStoreManager(config)
+        self.vector_store_manager = VectorStoreManager(config, qdrant_client=qdrant_client)
         
-        # Initialize centralized LLM Manager
-        if not LLM_MODEL_AVAILABLE:
-            raise ImportError("llm_model module not available. Please ensure llm_model.py is in the same directory.")
         
-        llm_config = config.to_llm_config()
-        self.llm_manager = LLMManager(llm_config)
+        self.llm_manager = llm_manager
+        if not self.llm_manager:
+            logger.warning("No global LLM Manager provided to RAGPipeline, creating a local instance.")
+            if not LLM_MODEL_AVAILABLE:
+                raise ImportError("llm_model module not available.")
+            llm_config = config.to_llm_config()
+            self.llm_manager = LLMManager(llm_config)
         
         # --- START: INITIALIZE PROVIDER CLIENTS FOR VISION ---
         # These clients are used *only* for vision, bypassing the LLMManager
@@ -1174,31 +1217,23 @@ class RAGPipeline:
                 
                 header = f"### 📚 **{source}**"
                 formatted_sections.append(f"{header}\n\n{content}")
+
+        if web_docs or user_docs:  # Add separator if we have other docs
+            formatted_sections.append("---")
+            formatted_sections.append("## 📚 **KNOWLEDGE BASE**")
+            for i, doc in enumerate(rag_docs, 1):
+                source = doc.metadata.get('source', f'Knowledge Base {i}')
+                content = doc.page_content.strip()
+                
+                header = f"### 📚 **{source}**"
+                formatted_sections.append(f"{header}\n\n{content}")
         
         return "\n\n".join(formatted_sections)
     
     def _create_followup_aware_prompt(self, system_prompt_override: Optional[str] = None, is_follow_up: bool = False, referring_entity: Optional[str] = None) -> ChatPromptTemplate:
         """Create a prompt template that's aware of follow-up context"""
         
-        system_message = system_prompt_override or """You are a helpful AI assistant that provides accurate responses based STRICTLY on the provided context.
-
-📌 **CRITICAL RESPONSE RULES - NO EXCEPTIONS:**
-- **ALWAYS start with an emoji + quick headline**: 🏷️ **Your Headline**
-- **ONLY use information from the provided context** - NEVER guess, assume, or use general knowledge
-- **If context is insufficient, explicitly state:** "I don't have enough information in the provided context to answer this question."
-- **For web search results, ALWAYS include the complete URL where information was found**
-
-✅ **MANDATORY STYLE & FORMAT:**
-- 🏷️ **Start with emoji + headline** (NEVER skip this)
-- 📋 Use bullets or short paragraphs for clarity
-- 💡 Emphasize main points
-- 😊 Make it friendly and human
-- 🤝 End with light follow-up when appropriate
-- **ALWAYS include source references** when using provided context
-- For document sources: "📄 **Source:** [Document Name]"
-- For web sources: "🔗 **Source:** [URL]"
-
-CRITICAL: NEVER provide information not found in the given context. Always cite your sources."""
+        system_message = system_prompt_override or self.config.system_prompt
         
         return ChatPromptTemplate.from_messages([
             ("system", system_message),
@@ -1233,6 +1268,8 @@ CRITICAL INSTRUCTION: You MUST start your response with emoji + headline format 
                 # Handle different input formats
                 if isinstance(input_dict, str):
                     formatted_prompt = input_dict
+                elif hasattr(input_dict, 'to_string'): # Handle LangChain prompt objects
+                    formatted_prompt = input_dict.to_string()
                 elif isinstance(input_dict, dict):
                     formatted_prompt = input_dict.get("text", str(input_dict))
                 else:
@@ -1272,59 +1309,34 @@ CRITICAL INSTRUCTION: You MUST start your response with emoji + headline format 
                 relevant_docs = pre_retrieved_docs
                 logger.info(f"📚 Using {len(relevant_docs)} pre-retrieved documents")
             else:
-                # Check if we have documents and retriever
                 if not self.retriever:
-                    # No RAG documents available - use general knowledge with proper formatting
-                    logger.info("🔍 No RAG retriever available, using general knowledge with formatting enforcement")
+                    logger.warning("No retriever available for RAG query. Falling back to direct LLM call.")
+                    messages = [{"role": "system", "content": system_prompt_override or self.config.system_prompt}]
+                    if chat_history:
+                        messages.extend(chat_history[-5:])
+                    messages.append({"role": "user", "content": question})
                     
-                    # Create messages with strong format enforcement
-                    messages = [
-                        {"role": "system", "content": system_prompt_override or f"""{self.config.system_prompt}
-
-CRITICAL FORMAT ENFORCEMENT: You MUST start your response with emoji + headline format: "🏷️ **Your Headline**". This is mandatory for ALL responses."""},
-                        {"role": "user", "content": f"""Current Time: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
-
-User Question: {question}
-
-CRITICAL INSTRUCTION: You MUST start your response with the emoji + headline format (🏷️ **Your Headline**). This is mandatory even when providing general knowledge. Since no relevant documents were found, clearly state: "I don't have enough information in the provided context to answer this question." """}
-                    ]
-                    
-                    # Generate response using centralized LLM manager with format enforcement
                     response = await self.llm_manager.generate_response(
                         messages=messages,
                         model=model or self.config.llm_model,
                         stream=False
                     )
-                    
                     return response
                 
-                # Retrieve relevant documents
-                relevant_docs = await self.retriever.ainvoke(question,limit=self.config.retrieval_k)
+                relevant_docs = await self.retriever.ainvoke(question)
 
             if not relevant_docs:
-                # No relevant documents found - clearly state this
-                logger.info("🔍 No relevant documents found")
-                
-                insufficient_response = f"""🏷️ **Information Not Available**
-
-I don't have enough information in the provided context to answer your question about "{question}".
-
-The knowledge base doesn't contain relevant documents that can help me provide an accurate answer.
-
-🤝 Could you try rephrasing your question or providing more specific details?"""
-                
-                return insufficient_response
+                logger.info("🔍 No relevant documents found for the query.")
+                return "I don't have enough information in the provided context to answer this question."
             
-            # We have relevant documents - use full RAG pipeline
             logger.info(f"📚 Found {len(relevant_docs)} relevant documents for RAG response")
             
-            # Create prompt template
             prompt_template = self._create_followup_aware_prompt(system_prompt_override)
             
             rag_chain = (
                 RunnableParallel({
                     "context": RunnableLambda(lambda x: self._format_documents(relevant_docs)),
-                    "question": RunnableLambda(lambda x: x["question"]),
+                    "question": RunnablePassthrough(),
                     "current_time": self._get_current_time_runnable()
                 })
                 | prompt_template
@@ -1332,8 +1344,7 @@ The knowledge base doesn't contain relevant documents that can help me provide a
                 | StrOutputParser()
             )
             
-            # Execute the chain
-            response = await rag_chain.ainvoke({"question": question})
+            response = await rag_chain.ainvoke(question)
             
             return response
             
@@ -1347,151 +1358,75 @@ The knowledge base doesn't contain relevant documents that can help me provide a
                           system_prompt_override: Optional[str] = None) -> AsyncGenerator[str, None]:
         """Query the RAG system using LCEL chain and return a streaming response"""
         try:
-            # Use pre-retrieved documents if provided
             if pre_retrieved_docs is not None:
                 relevant_docs = pre_retrieved_docs
                 logger.info(f"📚 Using {len(relevant_docs)} pre-retrieved documents for streaming")
             else:
-                # Check if we have documents and retriever
                 if not self.retriever:
-
-                    logger.info("🔍 No RAG retriever available, using general knowledge with formatting enforcement")
-                    
-                    messages = [
-                        {"role": "system", "content": system_prompt_override or f"""{self.config.system_prompt}
-
-    CRITICAL FORMAT ENFORCEMENT: You MUST start your response with emoji + headline format: "🏷️ **Your Headline**". This is mandatory for ALL responses."""},
-                        {"role": "user", "content": f"""Current Time: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
-
-    User Question: {question}
-
-    CRITICAL INSTRUCTION: You MUST start your response with the emoji + headline format (🏷️ **Your Headline**). This is mandatory even when providing general knowledge. Use *General Insight:* when providing information from your training data."""}
-                    ]
-                    
+                    logger.warning("No retriever available. Using direct LLM stream.")
+                    messages = [{"role": "system", "content": system_prompt_override or self.config.system_prompt}]
                     if chat_history:
-                        current_msg = messages.pop()
                         messages.extend(chat_history[-5:])
-                        messages.append(current_msg)
-
-                    # This ensures every message sent to the LLM is a valid dictionary.
-                    sanitized_messages = []
-                    for i, msg in enumerate(messages):
-                        if isinstance(msg, dict) and "role" in msg and "content" in msg:
-                            sanitized_messages.append(msg)
-                        elif isinstance(msg, tuple) and len(msg) == 2:
-                            logger.warning(f"Corrected a malformed tuple-based message at index {i}.")
-                            sanitized_messages.append({"role": str(msg[0]), "content": str(msg[1])})
-                        else:
-                            logger.warning(f"Skipping a malformed message at index {i}: {type(msg)}")
-
+                    messages.append({"role": "user", "content": question})
+                    
                     response_stream = await self.llm_manager.generate_response(
-                        messages=sanitized_messages, # Use the sanitized list
+                        messages=messages,
                         model=model or self.config.llm_model,
                         stream=True
                     )
-                    
                     async for chunk in response_stream:
                         yield chunk
                     return
                 
-                # Retrieve relevant documents
                 relevant_docs = await self.retriever.ainvoke(question)
 
             if not relevant_docs:
-                logger.info("🔍 No relevant documents found, using general knowledge with formatting enforcement")
-                
+                logger.info("🔍 No relevant documents found, using direct LLM stream with context note.")
                 messages = [
-                    {"role": "system", "content": system_prompt_override or f"""{self.config.system_prompt}
-
-CRITICAL FORMAT ENFORCEMENT: You MUST start your response with emoji + headline format: "🏷️ **Your Headline**". This is mandatory for ALL responses."""},
-                    {"role": "user", "content": f"""Current Time: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
-
-User Question: {question}
-
-CRITICAL INSTRUCTION: You MUST start your response with the emoji + headline format (🏷️ **Your Headline**). No relevant documents were found, so provide the best answer you can with general knowledge. Use *General Insight:* when providing information from your training data."""}
+                    {"role": "system", "content": system_prompt_override or self.config.system_prompt},
+                    {"role": "user", "content": f"Context: No relevant documents found.\n\nQuestion: {question}"}
                 ]
-                
-                # Add chat history if provided
                 if chat_history:
-                    current_msg = messages.pop()
                     messages.extend(chat_history[-5:])
-                    messages.append(current_msg)
                 
                 response_stream = await self.llm_manager.generate_response(
                     messages=messages,
                     model=model or self.config.llm_model,
                     stream=True
                 )
-                
                 async for chunk in response_stream:
                     yield chunk
                 return
             
-            # We have relevant documents - use full RAG pipeline
-            logger.info(f"📚 Found {len(relevant_docs)} relevant documents for RAG response")
+            logger.info(f"📚 Found {len(relevant_docs)} relevant documents for streaming RAG response")
             
-            # Create prompt template
             prompt_template = self._create_followup_aware_prompt(system_prompt_override)
             
-            # Build context
             context = self._format_documents(relevant_docs)
             current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             
-            # Format the final prompt
             formatted_prompt = await prompt_template.aformat_prompt(
                 context=context,
                 question=question,
                 current_time=current_time
             )
             
-            # Convert to messages format for LLM
-            messages = []
+            messages = formatted_prompt.to_messages()
+            # Convert LangChain messages to the dictionary format expected by LLMManager
+            message_dicts = []
+            for msg in messages:
+                # FIX: Correctly map LangChain message types to valid roles.
+                role = "user" if msg.type == 'human' else "assistant" if msg.type == 'ai' else msg.type
+                message_dicts.append({"role": role, "content": msg.content})
             
-            # Add system message if it exists
-            if hasattr(formatted_prompt, 'messages') and formatted_prompt.messages:
-                for msg in formatted_prompt.messages:
-                    if hasattr(msg, 'content'):
-                        if hasattr(msg, 'type'):
-                            if msg.type == 'system':
-                                messages.append({"role": "system", "content": msg.content})
-                            elif msg.type == 'human':
-                                messages.append({"role": "user", "content": msg.content})
-                        else:
-                            messages.append({"role": "user", "content": msg.content})
-            else:
-                # Fallback formatting with strong format enforcement
-                messages.append({"role": "system", "content": system_prompt_override or f"""{self.config.system_prompt}
-
-CRITICAL FORMAT ENFORCEMENT: You MUST start your response with emoji + headline format: "🏷️ **Your Headline**". This is mandatory for ALL responses."""})
-                user_message = f"""Context Information:
-{context}
-
-Current Time: {current_time}
-
-User Question: {question}
-
-CRITICAL INSTRUCTION: You MUST start your response with emoji + headline format (🏷️ **Your Headline**). Use the provided context with proper source citations, and format according to the style guide. Include source references for all information used."""
-                messages.append({"role": "user", "content": user_message})
-            
-            # Add chat history if provided
             if chat_history:
-                current_msg = messages.pop()
-                messages.extend(chat_history[-5:])
-                messages.append(current_msg)
-            
-            # Sanitize before the final call
-            sanitized_messages = []
-            for i, msg in enumerate(messages):
-                if isinstance(msg, dict) and "role" in msg and "content" in msg:
-                    sanitized_messages.append(msg)
-                elif isinstance(msg, tuple) and len(msg) == 2:
-                    logger.warning(f"Corrected a malformed tuple-based message at index {i}.")
-                    sanitized_messages.append({"role": str(msg[0]), "content": str(msg[1])})
-                else:
-                    logger.warning(f"Skipping a malformed message at index {i}: {type(msg)}")
+                # Inject chat history before the last user message
+                user_message = message_dicts.pop()
+                message_dicts.extend(chat_history[-5:])
+                message_dicts.append(user_message)
 
             response_stream = await self.llm_manager.generate_response(
-                messages=sanitized_messages, # Use the sanitized list
+                messages=message_dicts,
                 model=model or self.config.llm_model,
                 stream=True
             )
@@ -1503,15 +1438,52 @@ CRITICAL INSTRUCTION: You MUST start your response with emoji + headline format 
             logger.error(f"Error in RAG query stream: {str(e)}")
             yield f"🚨 **Error Processing Request**\n\nI encountered an error while processing your question: {str(e)}"
 
+    async def list_available_documents(self) -> List[str]:
+        """
+        Lists the sources of all documents currently in the vector store collection.
+        """
+        if not self.vector_store_manager or not self.vector_store_manager.client:
+            logger.warning("Vector store manager or client is not available.")
+            return []
+
+        try:
+            collection_name = self.config.qdrant_collection_name
+            logger.info(f"Listing documents from collection: {collection_name}")
+
+            # Qdrant's scroll API is used to iterate through all points
+            # We fetch with payload but without vectors to be efficient
+            response, _ = await asyncio.to_thread(
+                self.vector_store_manager.client.scroll,
+                collection_name=collection_name,
+                limit=1000,  # Adjust limit based on expected number of docs
+                with_payload=True,
+                with_vectors=False
+            )
+            
+            sources = set()
+            for point in response:
+                if point.payload and METADATA_PAYLOAD_KEY in point.payload:
+                    source = point.payload[METADATA_PAYLOAD_KEY].get("source")
+                    if source:
+                        sources.add(source)
+            
+            logger.info(f"Found {len(sources)} unique document sources.")
+            return sorted(list(sources))
+
+        except Exception as e:
+            logger.error(f"Error listing documents from Qdrant: {e}")
+            # This can happen if the collection doesn't exist yet, which is not a critical error
+            if "not found" in str(e).lower():
+                logger.warning(f"Collection '{self.config.qdrant_collection_name}' does not exist yet.")
+            return []
+
 
     async def cleanup(self):
         """Cleanup RAG pipeline resources"""
         try:
-            # Cleanup vector store manager
             if hasattr(self, 'vector_store_manager') and self.vector_store_manager:
                 await self.vector_store_manager.cleanup()
             
-            # Cleanup LLM manager
             if hasattr(self, 'llm_manager') and self.llm_manager:
                 await self.llm_manager.cleanup()
             

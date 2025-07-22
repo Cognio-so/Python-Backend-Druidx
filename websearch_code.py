@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional, Union, AsyncGenerator, Tuple
 
 # Core imports
 import numpy as np
+from llm_model import LLMManager
 
 from dotenv import load_dotenv
 
@@ -140,10 +141,11 @@ class WebSearchConfig:
 class WebSearchClient:
     """Enhanced web search client with LLM-based analysis and R2 storage integration using centralized LLM Manager"""
     
-    def __init__(self, config: WebSearchConfig):
+    def __init__(self, config: WebSearchConfig, llm_manager: Optional[LLMManager] = None):
         self.config = config
         self.storage_client = config.storage_client
-        
+        self.provided_llm_manager = llm_manager
+
         # Create temp processing directory for caching
         os.makedirs(config.temp_processing_path, exist_ok=True)
         
@@ -164,17 +166,14 @@ class WebSearchClient:
                     logger.error("❌ No Tavily API key provided. Web search will be disabled.")
             
             # Initialize centralized LLM Manager for query analysis
-            self.llm_manager = None
-            if LLM_MODEL_AVAILABLE:
-                try:
+            self.llm_manager = self.provided_llm_manager
+            if not self.llm_manager:
+                logger.warning("No global LLM Manager provided to WebSearchClient, creating a local instance.")
+                if LLM_MODEL_AVAILABLE:
                     llm_config = self.config.to_llm_config()
                     self.llm_manager = LLMManager(llm_config)
-                    logger.info("✅ LLM Manager initialized for query analysis")
-                except Exception as e:
-                    logger.error(f"❌ Error initializing LLM Manager: {e}")
-                    self.llm_manager = None
-            else:
-                logger.warning("⚠️ llm_model module not available. Query analysis will be disabled.")
+                else:
+                    logger.warning("⚠️ llm_model module not available. Query analysis will be disabled.")
             
             # Initialize embeddings for similarity calculations
             if self.config.openai_api_key and LANGCHAIN_AVAILABLE:
@@ -826,9 +825,11 @@ class WebSearchPipeline:
 class WebSearch:
     """Simplified web search interface for easy integration with R2 storage support"""
     
-    def __init__(self, tavily_api_key: Optional[str] = None, 
-                 openai_api_key: Optional[str] = None,
-                 config: Optional[WebSearchConfig] = None):
+    def __init__(self,
+    tavily_api_key: Optional[str] = None,
+    openai_api_key: Optional[str] = None,
+    config: Optional[WebSearchConfig] = None,
+    llm_manager: Optional[LLMManager] = None):
         """Initialize web search with optional configuration"""
         if config:
             self.config = config
@@ -839,7 +840,7 @@ class WebSearch:
             if openai_api_key:
                 self.config.openai_api_key = openai_api_key
         
-        self.client = WebSearchClient(self.config)
+        self.client = WebSearchClient(self.config, llm_manager=llm_manager)
         self.pipeline = WebSearchPipeline(self.config)
     
     async def search(self, query: str, max_results: int = 5) -> List[Document]:
